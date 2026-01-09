@@ -1,0 +1,50 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+
+  tcplog:
+    listen_address: "0.0.0.0:5140"
+
+  namedpipe:
+    path: /tmp/otel-named-pipe
+    mode: 0600
+      
+processors:
+  transform:
+    log_statements:
+      - context: resource
+        statements:
+          - set(attributes["service.name"], "test-service") where attributes["service.name"] == nil
+  
+  ratelimit:
+    resource_attribute_keys: [ "service.name", "service.namespace" ]
+    rate: 1
+    burst: 1
+    type: local
+    strategy: requests
+    throttle_behavior: error
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '0.0.0.0'
+                port: 9888
+    logs:
+      level: debug # Sets the minimum enabled logging level to INFO (hides debug)
+      disable_stacktrace: true # Disables automatic stacktrace capturing
+  
+  pipelines:
+    logs:
+      receivers: [otlp, tcplog, namedpipe]
+      processors: [transform, ratelimit]
+      exporters: [debug]
