@@ -38,6 +38,9 @@ type Config struct {
 	// processor ID.
 	MetadataKeys []string `mapstructure:"metadata_keys"`
 
+	// ResourceAttributeKeys are keys from OTEL resource attributes to use for rate limiting
+	ResourceAttributeKeys []string `mapstructure:"resource_attribute_keys"`
+
 	// Embed the rate limit settings
 	RateLimitSettings `mapstructure:",squash"`
 

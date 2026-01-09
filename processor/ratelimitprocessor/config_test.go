@@ -103,8 +103,9 @@ func TestLoadConfig(t *testing.T) {
 					ThrottleInterval: 1 * time.Second,
 					RetryDelay:       1 * time.Second,
 				},
-				DynamicRateLimiting: defaultDynamicRateLimiting,
-				MetadataKeys:        []string{"project_id"},
+				DynamicRateLimiting:   defaultDynamicRateLimiting,
+				MetadataKeys:          []string{"project_id"},
+				ResourceAttributeKeys: []string{"host.name"},
 			},
 		},
 		{

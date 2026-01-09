@@ -54,8 +54,8 @@ func (r *localRateLimiter) Shutdown(_ context.Context) error {
 func (r *localRateLimiter) RateLimit(ctx context.Context, hits int) error {
 	metadata := client.FromContext(ctx).Metadata
 	// Each (shared) processor gets its own rate limiter,
-	// so it's enough to use client metadata-based unique key.
-	key := getUniqueKey(metadata, r.cfg.MetadataKeys)
+	// so it's enough to use client metadata and resource attributes-based unique key.
+	key := getUniqueKey(ctx, metadata, r.cfg.MetadataKeys)
 	// local rate limiter ignores classes (no resolver), so pass empty class.
 	cfg, _, _ := resolveRateLimit(r.cfg, "", metadata)
 

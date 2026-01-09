@@ -92,6 +92,7 @@ func createLogsProcessor(
 			return nextConsumer.ConsumeLogs(ctx, ld)
 		},
 		config.MetadataKeys,
+		config.ResourceAttributeKeys,
 	)
 }
 
@@ -120,6 +121,7 @@ func createMetricsProcessor(
 			return nextConsumer.ConsumeMetrics(ctx, md)
 		},
 		config.MetadataKeys,
+		config.ResourceAttributeKeys,
 	)
 }
 
@@ -148,6 +150,7 @@ func createTracesProcessor(
 			return nextConsumer.ConsumeTraces(ctx, td)
 		},
 		config.MetadataKeys,
+		config.ResourceAttributeKeys,
 	)
 }
 
@@ -176,5 +179,6 @@ func createProfilesProcessor(
 			return nextConsumer.ConsumeProfiles(ctx, td)
 		},
 		config.MetadataKeys,
+		config.ResourceAttributeKeys,
 	)
 }

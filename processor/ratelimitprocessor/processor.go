@@ -41,12 +41,13 @@ import (
 
 type rateLimiterProcessor struct {
 	component.Component
-	rl               RateLimiter
-	metadataKeys     []string
-	telemetryBuilder *metadata.TelemetryBuilder
-	tracerProvider   trace.TracerProvider
-	logger           *zap.Logger
-	strategy         Strategy
+	rl                    RateLimiter
+	metadataKeys          []string
+	resourceAttributeKeys []string
+	telemetryBuilder      *metadata.TelemetryBuilder
+	tracerProvider        trace.TracerProvider
+	logger                *zap.Logger
+	strategy              Strategy
 }
 
 type LogsRateLimiterProcessor struct {
@@ -81,16 +82,18 @@ func NewLogsRateLimiterProcessor(
 	strategy Strategy,
 	next func(ctx context.Context, logs plog.Logs) error,
 	metadataKeys []string,
+	resourceAttributeKeys []string,
 ) (*LogsRateLimiterProcessor, error) {
 	return &LogsRateLimiterProcessor{
 		rateLimiterProcessor: rateLimiterProcessor{
-			Component:        rateLimiter,
-			rl:               rateLimiter.Unwrap(),
-			telemetryBuilder: telemetryBuilder,
-			tracerProvider:   tracerProvider,
-			logger:           logger,
-			metadataKeys:     metadataKeys,
-			strategy:         strategy,
+			Component:             rateLimiter,
+			rl:                    rateLimiter.Unwrap(),
+			telemetryBuilder:      telemetryBuilder,
+			tracerProvider:        tracerProvider,
+			logger:                logger,
+			metadataKeys:          metadataKeys,
+			resourceAttributeKeys: resourceAttributeKeys,
+			strategy:              strategy,
 		},
 		count: getLogsCountFunc(strategy),
 		next:  next,
@@ -105,16 +108,18 @@ func NewMetricsRateLimiterProcessor(
 	strategy Strategy,
 	next func(ctx context.Context, metrics pmetric.Metrics) error,
 	metadataKeys []string,
+	resourceAttributeKeys []string,
 ) (*MetricsRateLimiterProcessor, error) {
 	return &MetricsRateLimiterProcessor{
 		rateLimiterProcessor: rateLimiterProcessor{
-			Component:        rateLimiter,
-			rl:               rateLimiter.Unwrap(),
-			telemetryBuilder: telemetryBuilder,
-			tracerProvider:   tracerProvider,
-			logger:           logger,
-			metadataKeys:     metadataKeys,
-			strategy:         strategy,
+			Component:             rateLimiter,
+			rl:                    rateLimiter.Unwrap(),
+			telemetryBuilder:      telemetryBuilder,
+			tracerProvider:        tracerProvider,
+			logger:                logger,
+			metadataKeys:          metadataKeys,
+			resourceAttributeKeys: resourceAttributeKeys,
+			strategy:              strategy,
 		},
 		count: getMetricsCountFunc(strategy),
 		next:  next,
@@ -129,16 +134,18 @@ func NewTracesRateLimiterProcessor(
 	strategy Strategy,
 	next func(ctx context.Context, traces ptrace.Traces) error,
 	metadataKeys []string,
+	resourceAttributeKeys []string,
 ) (*TracesRateLimiterProcessor, error) {
 	return &TracesRateLimiterProcessor{
 		rateLimiterProcessor: rateLimiterProcessor{
-			Component:        rateLimiter,
-			rl:               rateLimiter.Unwrap(),
-			telemetryBuilder: telemetryBuilder,
-			tracerProvider:   tracerProvider,
-			logger:           logger,
-			metadataKeys:     metadataKeys,
-			strategy:         strategy,
+			Component:             rateLimiter,
+			rl:                    rateLimiter.Unwrap(),
+			telemetryBuilder:      telemetryBuilder,
+			tracerProvider:        tracerProvider,
+			logger:                logger,
+			metadataKeys:          metadataKeys,
+			resourceAttributeKeys: resourceAttributeKeys,
+			strategy:              strategy,
 		},
 		count: getTracesCountFunc(strategy),
 		next:  next,
@@ -153,16 +160,18 @@ func NewProfilesRateLimiterProcessor(
 	strategy Strategy,
 	next func(ctx context.Context, profiles pprofile.Profiles) error,
 	metadataKeys []string,
+	resourceAttributeKeys []string,
 ) (*ProfilesRateLimiterProcessor, error) {
 	return &ProfilesRateLimiterProcessor{
 		rateLimiterProcessor: rateLimiterProcessor{
-			Component:        rateLimiter,
-			rl:               rateLimiter.Unwrap(),
-			telemetryBuilder: telemetryBuilder,
-			tracerProvider:   tracerProvider,
-			logger:           logger,
-			metadataKeys:     metadataKeys,
-			strategy:         strategy,
+			Component:             rateLimiter,
+			rl:                    rateLimiter.Unwrap(),
+			telemetryBuilder:      telemetryBuilder,
+			tracerProvider:        tracerProvider,
+			logger:                logger,
+			metadataKeys:          metadataKeys,
+			resourceAttributeKeys: resourceAttributeKeys,
+			strategy:              strategy,
 		},
 		count: getProfilesCountFunc(strategy),
 		next:  next,
@@ -243,8 +252,8 @@ func withRateLimit[T any](ctx context.Context,
 				fields = append(fields, zap.String(string(kv.Key), kv.Value.AsString()))
 			}
 		}
-		logger.Error(
-			"request is over the limits defined by the rate limiter",
+		logger.Warn(
+			"request is over the limits defined by the custom rate limiter",
 			append(fields, zap.Error(err))...,
 		)
 		return err
@@ -253,6 +262,10 @@ func withRateLimit[T any](ctx context.Context,
 }
 
 func (r *LogsRateLimiterProcessor) ConsumeLogs(ctx context.Context, ld plog.Logs) error {
+	// Extract resource attributes from logs and store in context
+	attrs := extractResourceAttributesFromLogs(ld, r.resourceAttributeKeys)
+	ctx = WithResourceAttributes(ctx, attrs)
+
 	return withRateLimit(
 		ctx,
 		r.count(ld),
@@ -265,6 +278,10 @@ func (r *LogsRateLimiterProcessor) ConsumeLogs(ctx context.Context, ld plog.Logs
 }
 
 func (r *MetricsRateLimiterProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
+	// Extract resource attributes from metrics and store in context
+	attrs := extractResourceAttributesFromMetrics(md, r.resourceAttributeKeys)
+	ctx = WithResourceAttributes(ctx, attrs)
+
 	return withRateLimit(
 		ctx,
 		r.count(md),
@@ -277,6 +294,10 @@ func (r *MetricsRateLimiterProcessor) ConsumeMetrics(ctx context.Context, md pme
 }
 
 func (r *TracesRateLimiterProcessor) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
+	// Extract resource attributes from traces and store in context
+	attrs := extractResourceAttributesFromTraces(td, r.resourceAttributeKeys)
+	ctx = WithResourceAttributes(ctx, attrs)
+
 	return withRateLimit(
 		ctx,
 		r.count(td),
@@ -289,6 +310,10 @@ func (r *TracesRateLimiterProcessor) ConsumeTraces(ctx context.Context, td ptrac
 }
 
 func (r *ProfilesRateLimiterProcessor) ConsumeProfiles(ctx context.Context, pd pprofile.Profiles) error {
+	// Extract resource attributes from profiles and store in context
+	attrs := extractResourceAttributesFromProfiles(pd, r.resourceAttributeKeys)
+	ctx = WithResourceAttributes(ctx, attrs)
+
 	return withRateLimit(
 		ctx,
 		r.count(pd),

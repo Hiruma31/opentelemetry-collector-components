@@ -208,7 +208,7 @@ func (r *gubernatorRateLimiter) Shutdown(ctx context.Context) error {
 
 func (r *gubernatorRateLimiter) RateLimit(ctx context.Context, hits int) error {
 	metadata := client.FromContext(ctx).Metadata
-	uniqueKey := getUniqueKey(metadata, r.cfg.MetadataKeys)
+	uniqueKey := getUniqueKey(ctx, metadata, r.cfg.MetadataKeys)
 	// First resolve the class if classes are set.
 	class, err := r.classResolver.ResolveClass(ctx, uniqueKey)
 	if err != nil {
