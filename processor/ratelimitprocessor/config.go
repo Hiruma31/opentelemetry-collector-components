@@ -20,7 +20,6 @@ package ratelimitprocessor // import "github.com/elastic/opentelemetry-collector
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"go.opentelemetry.io/collector/client"
@@ -80,6 +79,20 @@ type Config struct {
 	//
 	// Defaults to false (fail-closed behavior)
 	FailOpen bool `mapstructure:"fail_open"`
+
+	// MaxLocalLimiters controls the maximum number of rate limiters to keep in memory
+	// when using the local rate limiter type. This prevents unbounded memory growth
+	// when dealing with high-cardinality unique keys (e.g., many different clients).
+	// When the limit is exceeded, the least recently used limiter is evicted.
+	// Set to 0 to use the default (10000).
+	// Only applicable when the rate limiter type is "local".
+	//
+	// Defaults to 10000
+	MaxLocalLimiters int `mapstructure:"max_local_limiters"`
+
+	// overrideMatcher is an optimized matcher for override resolution.
+	// It's computed during validation to avoid repeated allocations during rate limit checks.
+	overrideMatcher *overrideMatcher `mapstructure:"-"`
 }
 
 // DynamicRateLimiting defines settings for dynamic rate limiting.
@@ -297,37 +310,35 @@ func createDefaultConfig() component.Config {
 //  4. Top-level fallback config (SourceKindFallback)
 //
 // When sourceKind is override or fallback, className will be empty.
+//
+// OPTIMIZATION: Uses pre-computed override matcher to avoid repeated allocations
+// and lookups in the hot path.
 func resolveRateLimit(
 	cfg *Config,
 	className string,
 	metadata client.Metadata,
 ) (result RateLimitSettings, kind SourceKind, name string) {
 	result = cfg.RateLimitSettings
+
 	// 1. Per-key override takes absolute precedence regardless of classes.
-	for _, override := range cfg.Overrides {
-		match := true
-		for k, v := range override.Matches {
-			if slices.Compare(metadata.Get(k), v) != 0 {
-				match = false
-				break
-			}
+	// Uses pre-computed matcher for O(n) with pre-sorted keys instead of repeated map iteration.
+	if idx := cfg.overrideMatcher.findMatch(metadata); idx >= 0 {
+		override := cfg.Overrides[idx]
+		if override.Rate != nil {
+			result.Rate = *override.Rate
 		}
-		if match {
-			if override.Rate != nil {
-				result.Rate = *override.Rate
-			}
-			if override.Burst != nil {
-				result.Burst = *override.Burst
-			}
-			if override.ThrottleInterval != nil {
-				result.ThrottleInterval = *override.ThrottleInterval
-			}
-			if override.DisableDynamic {
-				result.disableDynamic = true
-			}
-			return result, SourceKindOverride, ""
+		if override.Burst != nil {
+			result.Burst = *override.Burst
 		}
+		if override.ThrottleInterval != nil {
+			result.ThrottleInterval = *override.ThrottleInterval
+		}
+		if override.DisableDynamic {
+			result.disableDynamic = true
+		}
+		return result, SourceKindOverride, ""
 	}
+
 	// 2. Resolved class (only if provided and exists)
 	if className != "" {
 		if class, exists := cfg.Classes[className]; exists {
@@ -341,6 +352,7 @@ func resolveRateLimit(
 			return result, SourceKindClass, className
 		}
 	}
+
 	// 3. DefaultClass (if configured & exists)
 	if cfg.DefaultClass != "" {
 		if class, exists := cfg.Classes[cfg.DefaultClass]; exists {
@@ -354,6 +366,7 @@ func resolveRateLimit(
 			return result, SourceKindClass, cfg.DefaultClass
 		}
 	}
+
 	// 4. Fallback to top-level settings.
 	return cfg.RateLimitSettings, SourceKindFallback, ""
 }
@@ -443,6 +456,10 @@ func (config *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("override %q: %w", key, err))
 		}
 	}
+
+	// OPTIMIZATION: Pre-compute override matcher for hot path performance
+	config.overrideMatcher = newOverrideMatcher(config.Overrides)
+
 	return errors.Join(errs...)
 }
 

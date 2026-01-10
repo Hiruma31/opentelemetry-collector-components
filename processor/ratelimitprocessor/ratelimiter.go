@@ -76,6 +76,9 @@ type RateLimiter interface {
 // extremely high cardinality: tenant ID would be a good choice. For rate
 // limiting by IP (e.g. to avoid DDoS), consider running OpenTelemetry
 // Collector behind a WAF/API Gateway/proxy.
+//
+// OPTIMIZATION: When no metadata keys are configured, this is a no-op and
+// the string "default" is returned immediately without any allocations.
 func getUniqueKey(ctx context.Context, metadata client.Metadata, metadataKeys []string) string {
 	resourceAttrs := getResourceAttributesFromContext(ctx)
 
@@ -84,7 +87,12 @@ func getUniqueKey(ctx context.Context, metadata client.Metadata, metadataKeys []
 	}
 
 	// Generate a unique key from client metadata and attributes.
+	// Pre-allocate with estimated capacity to reduce allocations.
 	var uniqueKey strings.Builder
+	// Estimate: ~30 bytes per key-value pair
+	estimatedCap := (len(metadataKeys) + len(resourceAttrs)) * 30
+	uniqueKey.Grow(estimatedCap)
+
 	index := 0
 
 	// Add metadata keys first
@@ -104,18 +112,32 @@ func getUniqueKey(ctx context.Context, metadata client.Metadata, metadataKeys []
 		index++
 	}
 
-	// Add attribute keys in sorted order
-	for _, attrKey := range sortedKeys(resourceAttrs) {
-		if index > 0 {
-			uniqueKey.WriteByte(';')
+	// Add attribute keys in sorted order (pre-allocate to avoid repeated sorting)
+	if len(resourceAttrs) > 0 {
+		attrs := getResourceAttributeKeysSync(resourceAttrs, len(resourceAttrs))
+		for _, attrKey := range attrs {
+			if index > 0 {
+				uniqueKey.WriteByte(';')
+			}
+			uniqueKey.WriteString(attrKey)
+			uniqueKey.WriteByte(':')
+			uniqueKey.WriteString(resourceAttrs[attrKey])
+			index++
 		}
-		uniqueKey.WriteString(attrKey)
-		uniqueKey.WriteByte(':')
-		uniqueKey.WriteString(resourceAttrs[attrKey])
-		index++
 	}
 
 	return uniqueKey.String()
+}
+
+// getResourceAttributeKeysSync returns sorted keys of a resource attributes map.
+// This function pre-allocates the slice to the exact size, reducing allocations.
+func getResourceAttributeKeysSync(m map[string]string, expectedLen int) []string {
+	keys := make([]string, 0, expectedLen)
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // sortedKeys returns the keys of a map in a consistent order

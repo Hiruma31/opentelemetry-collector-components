@@ -19,7 +19,6 @@ package ratelimitprocessor // import "github.com/elastic/opentelemetry-collector
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"go.opentelemetry.io/collector/client"
@@ -31,15 +30,38 @@ import (
 var _ RateLimiter = (*localRateLimiter)(nil)
 
 type localRateLimiter struct {
-	cfg *Config
-	set processor.Settings
-	// TODO use an LRU to keep a cap on the number of limiters.
-	// When the LRU capacity is exceeded, reuse the evicted limiter.
-	limiters sync.Map
+	cfg            *Config
+	set            processor.Settings
+	limiters       *LRUCache[string, *rate.Limiter]
+	defaultLimiter *rate.Limiter
+	hasMetadataKey bool
 }
 
+// DefaultMaxLimiters is the maximum number of rate limiters to keep in memory per processor.
+// This prevents unbounded memory growth when dealing with high-cardinality unique keys.
+// When exceeded, least recently used limiters are evicted.
+const DefaultMaxLimiters = 10000
+
 func newLocalRateLimiter(cfg *Config, set processor.Settings) (*localRateLimiter, error) {
-	return &localRateLimiter{cfg: cfg, set: set}, nil
+	maxLimiters := DefaultMaxLimiters
+	if cfg.MaxLocalLimiters > 0 {
+		maxLimiters = cfg.MaxLocalLimiters
+	}
+
+	hasMetadataKey := len(cfg.MetadataKeys) > 0 || len(cfg.ResourceAttributeKeys) > 0
+	var defaultLimiter *rate.Limiter
+	if !hasMetadataKey {
+		// Fast path: if no metadata keys, create a single limiter for all traffic
+		defaultLimiter = rate.NewLimiter(rate.Limit(cfg.Rate), cfg.Burst)
+	}
+
+	return &localRateLimiter{
+		cfg:            cfg,
+		set:            set,
+		limiters:       NewLRUCache[string, *rate.Limiter](maxLimiters),
+		defaultLimiter: defaultLimiter,
+		hasMetadataKey: hasMetadataKey,
+	}, nil
 }
 
 func (r *localRateLimiter) Start(_ context.Context, _ component.Host) error {
@@ -47,20 +69,37 @@ func (r *localRateLimiter) Start(_ context.Context, _ component.Host) error {
 }
 
 func (r *localRateLimiter) Shutdown(_ context.Context) error {
-	r.limiters = sync.Map{}
+	r.limiters.Clear()
 	return nil
 }
 
 func (r *localRateLimiter) RateLimit(ctx context.Context, hits int) error {
+	// Fast path: no metadata keys configured, use single global limiter
+	if !r.hasMetadataKey {
+		cfg := r.cfg.RateLimitSettings
+		return r.checkLimit(ctx, hits, r.defaultLimiter, cfg)
+	}
+
 	metadata := client.FromContext(ctx).Metadata
-	// Each (shared) processor gets its own rate limiter,
-	// so it's enough to use client metadata and resource attributes-based unique key.
 	key := getUniqueKey(ctx, metadata, r.cfg.MetadataKeys)
+
 	// local rate limiter ignores classes (no resolver), so pass empty class.
 	cfg, _, _ := resolveRateLimit(r.cfg, "", metadata)
 
-	v, _ := r.limiters.LoadOrStore(key, rate.NewLimiter(rate.Limit(cfg.Rate), cfg.Burst))
-	limiter := v.(*rate.Limiter)
+	// Use LRU cache with bounded capacity
+	limiter, err := r.limiters.GetOrStore(key, func() (*rate.Limiter, error) {
+		return rate.NewLimiter(rate.Limit(cfg.Rate), cfg.Burst), nil
+	})
+	if err != nil {
+		return err
+	}
+
+	return r.checkLimit(ctx, hits, limiter, cfg)
+}
+
+// checkLimit performs the actual rate limit check on a limiter.
+// Extracted to reduce duplication between fast and slow paths.
+func (r *localRateLimiter) checkLimit(ctx context.Context, hits int, limiter *rate.Limiter, cfg RateLimitSettings) error {
 	switch cfg.ThrottleBehavior {
 	case ThrottleBehaviorError:
 		if ok := limiter.AllowN(time.Now(), hits); !ok {
